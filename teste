@@ -1,0 +1,239 @@
+//inclusão das bibliotecas
+
+#include <SD.h>
+#include <SPI.h>
+#include <Ethernet.h>
+#include "EmonLib.h"
+#include <LiquidCrystal.h> 
+
+
+LiquidCrystal lcd(9, 8, 7, 6, 5, 3);//Definições do display
+
+EnergyMonitor SCT013; //variável para o sensor de corrente
+
+const int chipSelect = 4; //seleção de chip do Ethernet Shield
+
+//Variáveis globais
+float tarifa=0.484;//altere aqui o valor de Kilowatt/hora da sua região
+int pinSCT = A1;   //Pino analógico conectado ao SCT-013
+float pinoentrada; //Pino para a leitura de tensão
+float tensao=0;    //variável que recebe o valor de tensão
+int soma=0;        //variável que soma as tensões para fazer a média
+int media=0;       //variável para a média das tensões da variável soma
+float potencia=0;  //variável que guarda o valor da corrente x tensão
+float valor;       //variável para a tensão gerada pelo optoacoplador
+float y=0;         //variável que armazena a soma do valor a ser pago
+float x=0;         //variável que armazena o valor a ser pago
+int segundo=0;     //Variável para segundos do contador
+int minuto=0;      //Variável para minutos do contador
+int hora=0;        //Variável para horas do contador
+int dia=0;         //Variável para dias do contador
+int parar=0;       //Variável para interromper a energia
+int rele;          //variavel do rele
+
+//Define o MAC Address usando o endereco da placa ou
+//atribuindo um MAC manualmente
+#if defined(WIZ550io_WITH_MACADDRESS)
+;
+#else
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+#endif
+
+//Altere o IP abaixo de acordo com o endereco IP da sua rede
+IPAddress ip(10,0,0,7);
+
+//Inicializa o servidor Web na porta 80
+EthernetServer server(80);
+
+
+void setup()
+{
+ 
+  pinMode(A2,INPUT);   //pino analógico para a leitura da tensão
+  SCT013.current(pinSCT, 6.0607); //Calibragem do resitor de carga 330 Ohms
+  Serial.begin(9600);  //inicia o monitor serial
+  lcd.begin(16,2);     //inicia o lcd
+  lcd.setCursor(0,0);
+  lcd.print("teste");
+  
+  //Inicializa a conexao ethernet
+#if defined(WIZ550io_WITH_MACADDRESS)
+  Ethernet.begin(ip);
+#else
+  Ethernet.begin(mac, ip);
+#endif
+  server.begin();
+  //Mostra no serial monitor o endereco IP
+  Serial.print("Servidor no endereco IP: ");
+  Serial.println(Ethernet.localIP());
+
+  //Inicializa o cartao SD
+  Serial.print("Inicializando cartao SD...");
+
+  //Verifica se o cartao esta presente ou com erro
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Erro no cartao ou cartao nao inserido!");
+    // don't do anything more:
+    return;
+  }
+  //Inicialização do SD card
+  Serial.println(" Cartao inicializado.");
+  Serial.println();
+  Serial.println("Aguardando conexoes....");
+}
+
+void loop()
+{
+lcd.setCursor(0,0);
+
+ double Irms = SCT013.calcIrms(1480);   // Calcula o valor da Corrente
+  soma=0;
+  float total=(tarifa/3600)*2.02116; //Converte a tarifa de KW/h para KW/s
+
+   //Aguarda conexoes
+  EthernetClient client = server.available();
+  if (client) {
+    Serial.println("Nova conexao");
+    boolean currentLineIsBlank = true;
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read();
+        Serial.write(c);
+        if (c == 'n' && currentLineIsBlank) {
+          //Envia uma resposta padrao HTTP
+          client.println("HTTP/1.1 200 OK");
+          client.println("Content-Type: text/html");
+          client.println("Connection: close");
+          //Recarrega a pagina a cada 1 segundo
+          client.println("Refresh: 1");
+          client.println();
+          client.println("<!DOCTYPE HTML>");
+          client.println("<html>");
+
+        
+   //Calibragem para zerar valores         
+   if(media<3){media=0;}
+   if(Irms<0.03){Irms=0;}
+   if(potencia<4){potencia=0;}
+        
+          //Mostra os valores no browser
+          client.print("<h2>Medidor de consumo de energia 2</h2>");
+          client.print("<br/>");
+          client.print("Tens&atilde;o: ");
+          client.print(media);
+          client.print(" V");
+          client.print("<br/>");
+          client.print("Corrente: ");
+          client.print(Irms);
+          client.print(" A");
+          client.print("<br/>");
+          client.print("Potencia: ");
+          client.print(potencia);
+          client.print(" W");
+          client.print("<br/>");
+          client.print("<br/>");
+          client.print("Tempo: ");
+          client.print(dia);
+          client.print(" dias, ");
+           if(hora<10){client.print("0");}
+          client.print(hora);
+          client.print("h");
+           if(minuto<10){client.print("0");}
+          client.print(minuto);
+          client.print("m");
+           if(segundo<10){client.print("0");}
+          client.print(segundo);
+          client.print("s");
+          client.print("<br/>");
+          client.print("<br/>");
+          client.print("Valor a pagar: ");
+          client.print("R$ ");
+          client.print(y,8);
+          client.print("<br/>");
+        
+          //Grava os valores lidos no cartao SD
+          //Abre o arquivo arquivo.txt
+          File datafile = SD.open("data.txt", FILE_WRITE);
+          //Se arquivo.txt estiver disponivel, grava os dados
+          if (datafile)
+          {           
+             datafile.print(media); 
+             datafile.print("V - ");
+             datafile.print(Irms);
+             datafile.print("A - ");
+             datafile.print(potencia);
+             datafile.print("W - ");
+             datafile.print("R$ ");
+             datafile.println(y,8);
+             datafile.println();
+            datafile.close();
+            //Mensagem de aviso no serial monitor
+            Serial.println("Dados gravados no cartao SD");    
+          }
+          //Mensagem de erro caso datalogger.txt nao
+          //estiver disponivel
+          else {
+            Serial.println("Erro ao abrir data.txt");
+          }
+          break;
+        }
+        if (c == 'n') {
+          currentLineIsBlank = true;
+        }
+        else if (c != 'r') {
+          currentLineIsBlank = false;
+        }
+      }
+    }
+    delay(1);
+    client.stop();
+    Serial.println("client disconnected");
+  }
+    //Faz 100 amostras de leitura, para tirar uma media da tensão
+    //Este processo demora 300 mili segundos
+    for(int i=0;i<100;i++){
+    pinoentrada = analogRead(A2);
+    tensao=(pinoentrada*4.8)/1024;
+    tensao=tensao*35.31;
+    valor=(pinoentrada*4.8)/1024;
+    soma=soma+tensao;  
+    }    
+    media=soma/100;  //Divide a soma das amostras pelo numero de amostras
+    potencia = Irms * media;   // Calcula o valor da Potencia Instantanea 
+   
+    //Calibragem para zerar valores
+    if(media<3){media=0;}
+    if(Irms<0.03){Irms=0;}
+    if(potencia<4){potencia=0;}
+
+     //Mostrar os valores no LCD
+     lcd.setCursor(0,0);   //seta o cursor na primeira linha e primeira coluna
+     lcd.print("P:");     //Mostra o valor da potencia 
+     lcd.print(potencia);
+     lcd.print("W");
+     lcd.setCursor(9,0);  // Mostra o valor da corrente 
+     lcd.print("I:");
+     lcd.print(Irms);
+     lcd.print("A");
+     lcd.setCursor(0,1);  //Seta o cursor na segunda linha
+     lcd.print("T:");     // Mostra o valor da tensaão   
+     lcd.print(media);
+     lcd.print("V");
+     lcd.setCursor(6,1);
+     lcd.print(y,8);
+
+       //Implementa um contador
+       segundo=segundo+1;
+       if (segundo >=60) {segundo = 0; minuto = minuto+1;}
+       if (minuto >=60){segundo =0;minuto=0;hora = hora+1;}
+       if (hora >23){segundo=0;minuto=0;hora =0; dia+1;}
+       
+       delay(700); //Espera 1 segundo no total, 300 milissegundos do loop anterior + 700 milissegundos
+     
+     x=(((potencia)/1000)*total); //calcula e guarda em x o valor do consumo em reais
+     y=y+x; //após 1 segundo, soma e guarda em y o valor de x
+    lcd.clear(); //limpa o LCD
+  if(parar == y){
+    digitalWrite(rele,HIGH);
+  }
+}
